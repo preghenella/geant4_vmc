@@ -1,4 +1,5 @@
 #include "TVirtualMC.h"
+#include "aligeo.C"
 
 /******************************************************************************/
 
@@ -7,20 +8,29 @@ std::map<std::string, TGeoMedium *> media;
 
 /******************************************************************************/
 
-double magneticField = 5.; // kG
+double magneticField = 10.; // kG
 
 /******************************************************************************/
 
-bool iLargeTank = false;
-bool iBrickWall = true;
-bool iSheetWall = false;
-bool iSingleFoil = false;
+bool iALICE          = false;
+bool iLargeTank      = false;
+bool iBrickWall      = false;
+bool iSheetWall      = false;
+bool iSingleFoil     = false;
+bool iSimpleDetector = true;
+
+bool iSimpleDetectorPipe           = true;
+bool iSimpleDetectorTracker        = true;
+bool iSimpleDetectorBuffer         = true;
+bool iSimpleDetectorCalorimeterEM  = true;
+bool iSimpleDetectorCalorimeterHAD = true;
+bool iSimpleDetectorEndCaps        = true;
 
 /******************************************************************************/
 
 std::string mWorld      = "Air";
 std::string mLargeTank  = "Water";
-std::string mBrickWall  = "Lead";
+std::string mBrickWall  = "Gold";
 std::string mSheetWall  = "Silicon";
 std::string mSingleFoil = "Silicon";
 float pSingleFoil = -10.;
@@ -36,6 +46,7 @@ void CreateLargeTank(std::string &name);
 void CreateBrickWall(std::string &name);
 void CreateSheetWall(std::string &name);
 void CreateSingleFoil(std::string &name, float pos);
+void CreateSimpleDetector();
 
 /******************************************************************************/
 
@@ -59,6 +70,10 @@ DrawGeometry()
 void
 Transparency(char value = 50)
 {
+  for (int ivol = 0; ivol < gGeoManager->GetListOfVolumes()->GetEntries(); ivol++) {
+    auto volume = (TGeoVolume *)gGeoManager->GetListOfVolumes()->At(ivol);
+    volume->SetTransparency(50);
+  }
 }
 
 /******************************************************************************/
@@ -67,8 +82,27 @@ void
 CustomGeo()
 {
 
-  if (!gGeoManager) CreateGeoManager();
+  /** use ALICE geometry **/
+  if (iALICE) {
 
+    /** load ALICE geomtry from file **/
+    loadGeometry();
+    /** set ALICE magnetic field **/
+    if (gMC) gMC->SetMagField(new o2::field::MagneticField("Maps","Maps"));
+
+    /** visualisation **/
+    cleanMaster();
+    visibleStructure("Solenoid");
+    visibleStructure("Doors", false);
+    visibleStructure("Pipe");
+    visibleStructure("Dipole");
+    visibleStructure("Absorber");
+    visibleStructure("Frame");
+  }
+  
+  if (!gGeoManager) CreateGeoManager();
+  else return;
+  
   /** set magnetic field **/
   if (gMC) gMC->SetMagField(new TGeoUniformMagField(0., 0., magneticField));
   
@@ -76,7 +110,7 @@ CustomGeo()
   CreateMaterials();
   
   /** create world **/
-  auto world = gGeoManager->MakeBox("World", media[mWorld], 100., 100., 100.);
+  auto world = gGeoManager->MakeBox("World", media[mWorld], 250., 250., 250.);
   gGeoManager->SetTopVolume(world);
 
   /** create structures **/
@@ -84,6 +118,7 @@ CustomGeo()
   if (iBrickWall) CreateBrickWall(mBrickWall);
   if (iSheetWall) CreateSheetWall(mSheetWall);
   if (iSingleFoil) CreateSingleFoil(mSingleFoil, pSingleFoil);
+  if (iSimpleDetector) CreateSimpleDetector();
 
   /** close geometry **/
   gGeoManager->CloseGeometry();
@@ -114,7 +149,7 @@ CreateMaterials()
   Double_t param[20];
   for (Int_t i = 0; i < 20; ++i) param[i] = 0.;
   param[1] = 2;     // ifield - User defined magnetic field
-  param[2] = 50.;   // fieldm - Maximum field value (in kiloGauss)
+  param[2] = 100.;   // fieldm - Maximum field value (in kiloGauss)
   //  param[3] = 20.;  // tmaxfd - Maximum angle due to field deflection 
   //  param[4] = -0.01; // stemax - Maximum displacement for multiple scat 
   //  param[5] = -.3;   // deemax - Maximum fractional energy loss, DLS 
@@ -158,10 +193,20 @@ CreateMaterials()
   materials["Aluminum"] = new TGeoMaterial("Aluminum", table->FindElement("Al"), density);
   media["Aluminum"] = new TGeoMedium("Aluminum", media.size(), materials["Aluminum"], param);
       
+  /** Beryllium **/
+  density = 1.85;
+  materials["Beryllium"] = new TGeoMaterial("Beryllium", table->FindElement("Be"), density);
+  media["Beryllium"] = new TGeoMedium("Beryllium", media.size(), materials["Beryllium"], param);
+      
   /** Diamond **/
   density = 3.51;
   materials["Diamond"] = new TGeoMaterial("Diamond", table->FindElement("C"), density);
   media["Diamond"] = new TGeoMedium("Diamond", media.size(), materials["Diamond"], param);
+      
+  /** Iron **/
+  density = 15.51; // fix me
+  materials["Iron"] = new TGeoMaterial("Iron", table->FindElement("Fe"), density);
+  media["Iron"] = new TGeoMedium("Iron", media.size(), materials["Iron"], param);
       
   /** Gold **/
   density = 19.32;
@@ -227,6 +272,54 @@ CreateSingleFoil(std::string &name, float pos)
 /******************************************************************************/
 
 void
+CreateSimpleDetector()
+{
+
+  /** create beam pipe **/
+  if (iSimpleDetectorPipe) {
+    auto beamPipe = gGeoManager->MakeTube("BeamPipe", media["Beryllium"], 2.9, 3.1, 240.);
+    gGeoManager->GetTopVolume()->AddNode(beamPipe, 1, new TGeoTranslation(0., 0., 0.));
+  }
+    
+  /** create tracker layers **/
+  if (iSimpleDetectorTracker) {
+    for (int ilayer = 1; ilayer < 6; ilayer++) {
+      auto trackerLayer = gGeoManager->MakeTube(Form("TrackerLayer_%d", ilayer), media["Silicon"],
+						5. - 0.25 + ilayer * 5., 5 + 0.25 + ilayer * 5., 50.);
+      gGeoManager->GetTopVolume()->AddNode(trackerLayer, 1 + ilayer, new TGeoTranslation(0., 0., 0.));
+    }
+  }
+
+  /** create water buffer **/
+  if (iSimpleDetectorBuffer) {
+    auto waterBuffer = gGeoManager->MakeTube("WaterBuffer", media["Water"], 40., 140., 100.);
+    gGeoManager->GetTopVolume()->AddNode(waterBuffer, 1, new TGeoTranslation(0., 0., 0.));
+  }
+    
+  /** create electromagnetic calorimeter **/
+  if (iSimpleDetectorCalorimeterEM) {
+    auto calorimeterEM = gGeoManager->MakeTube("CalorimeterEM", media["Gold"], 150., 165., 170.);
+    gGeoManager->GetTopVolume()->AddNode(calorimeterEM, 1, new TGeoTranslation(0., 0., 0.));
+  }
+    
+  /** create hadronic calorimeter **/
+  if (iSimpleDetectorCalorimeterHAD) {
+    auto calorimeterHAD = gGeoManager->MakeTube("CalorimeterHAD", media["Iron"], 170., 220., 170.);
+    gGeoManager->GetTopVolume()->AddNode(calorimeterHAD, 1, new TGeoTranslation(0., 0., 0.));
+  }
+    
+  /** create end caps **/
+  if (iSimpleDetectorEndCaps) {
+    auto endCap = gGeoManager->MakeTube("EndCap", media["Lead"], 5., 140., 40.);
+    gGeoManager->GetTopVolume()->AddNode(endCap, 1, new TGeoTranslation(0., 0., -150.));
+    gGeoManager->GetTopVolume()->AddNode(endCap, 2, new TGeoTranslation(0., 0., 150.));
+  }
+    
+}
+
+/******************************************************************************/
+
+void
 AnimateTracks()
 {
   gGeoManager->AnimateTracks(0., 1.e-8, 200, "/*/S");
@@ -269,8 +362,7 @@ DrawPoly(const TVirtualGeoTrack *track)
   poly->SetLineWidth(track->GetLineWidth());
   poly->SetLineStyle(track->GetLineStyle());
   if (track->GetParentId() < 0) {
-    poly->SetLineColor(1);
-    poly->SetLineWidth(5);
+    poly->SetLineWidth(4);
   }
   poly->Draw("same,c");
 }
